@@ -86,6 +86,9 @@ class Stitcher:
         self.blender = Blender(args.blender_type, args.blend_strength)
         self.timelapser = Timelapser(args.timelapse, args.timelapse_prefix)
 
+        self.cameras = None
+        self.cameras_registered = False
+
     def stitch_verbose(self, images, feature_masks=[], verbose_dir=None):
         return verbose_stitching(self, images, feature_masks, verbose_dir)
 
@@ -94,17 +97,20 @@ class Stitcher:
             images, self.medium_megapix, self.low_megapix, self.final_megapix
         )
 
-        imgs = self.resize_medium_resolution()
-        features = self.find_features(imgs, feature_masks)
-        matches = self.match_features(features)
-        imgs, features, matches = self.subset(imgs, features, matches)
-        cameras = self.estimate_camera_parameters(features, matches)
-        cameras = self.refine_camera_parameters(features, matches, cameras)
-        cameras = self.perform_wave_correction(cameras)
-        self.estimate_scale(cameras)
+        if not self.cameras_registered:
+            imgs = self.resize_medium_resolution()
+            features = self.find_features(imgs, feature_masks)
+            matches = self.match_features(features)
+            imgs, features, matches = self.subset(imgs, features, matches)
+            cameras = self.estimate_camera_parameters(features, matches)
+            cameras = self.refine_camera_parameters(features, matches, cameras)
+            cameras = self.perform_wave_correction(cameras)
+            self.estimate_scale(cameras)
+            self.cameras = cameras
+            self.cameras_registered = True
 
-        imgs = self.resize_low_resolution(imgs)
-        imgs, masks, corners, sizes = self.warp_low_resolution(imgs, cameras)
+        imgs = self.resize_low_resolution()
+        imgs, masks, corners, sizes = self.warp_low_resolution(imgs, self.cameras)
         self.prepare_cropper(imgs, masks, corners, sizes)
         imgs, masks, corners, sizes = self.crop_low_resolution(
             imgs, masks, corners, sizes
@@ -113,7 +119,7 @@ class Stitcher:
         seam_masks = self.find_seam_masks(imgs, corners, masks)
 
         imgs = self.resize_final_resolution()
-        imgs, masks, corners, sizes = self.warp_final_resolution(imgs, cameras)
+        imgs, masks, corners, sizes = self.warp_final_resolution(imgs, self.cameras)
         imgs, masks, corners, sizes = self.crop_final_resolution(
             imgs, masks, corners, sizes
         )
