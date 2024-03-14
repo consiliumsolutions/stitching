@@ -1,6 +1,9 @@
 import cv2 as cv
 import numpy as np
 
+from .timer import Timer
+import gc
+gc.disable()
 
 class Blender:
     """https://docs.opencv.org/4.x/d6/d4a/classcv_1_1detail_1_1Blender.html"""
@@ -38,7 +41,15 @@ class Blender:
         self.blender.prepare(dst_sz)
 
     def feed(self, img, mask, corner):
-        self.blender.feed(cv.UMat(img.astype(np.int16)), mask, corner)
+        converted_image_timer = Timer("Converted Image")
+        converted_image = img.astype(np.int16)
+        converted_image_timer.stop()
+        converted_cvmat_timer = Timer("Converted CVMat")
+        converted_image_cvmat = cv.UMat(converted_image)
+        converted_cvmat_timer.stop()
+        feed_timer = Timer("Feed")
+        self.blender.feed(converted_image_cvmat, mask, corner)
+        feed_timer.stop()
 
     def blend(self):
         result = None

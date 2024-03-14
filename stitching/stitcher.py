@@ -16,6 +16,12 @@ from .timelapser import Timelapser
 from .verbose import verbose_stitching
 from .warper import Warper
 
+from .timer import Timer
+import logging
+import gc
+gc.disable()
+
+logging.info("LOADED MODULE: stitching/stitcher.py")
 
 class Stitcher:
     DEFAULT_SETTINGS = {
@@ -109,27 +115,85 @@ class Stitcher:
             self.cameras = cameras
             self.cameras_registered = True
 
+        low_res_timer = Timer("stitcher.stitch() func: resize_low_resolution")
         imgs = self.resize_low_resolution()
+        
+        low_res_timer.stop()
+        warp_timer = Timer("stitcher.stitch() func: warp_low_resolution")
+        
         imgs, masks, corners, sizes = self.warp_low_resolution(imgs, self.cameras)
+        
+        warp_timer.stop()
+        prepare_cropper_timer = Timer("stitcher.stitch() func: prepare_cropper")
+        
         self.prepare_cropper(imgs, masks, corners, sizes)
+        
+        prepare_cropper_timer.stop()
+        crop_low_res_timer = Timer("stitcher.stitch() func: crop_low_resolution")
+        
         imgs, masks, corners, sizes = self.crop_low_resolution(
             imgs, masks, corners, sizes
         )
+        
+        crop_low_res_timer.stop()
+        exposure_error_timer = Timer("stitcher.stitch() func: estimate_exposure_errors")
+
         self.estimate_exposure_errors(corners, imgs, masks)
+
+        exposure_error_timer.stop()
+        seam_finder_timer = Timer("stitcher.stitch() func: find_seam_masks")
+
         seam_masks = self.find_seam_masks(imgs, corners, masks)
 
+        seam_finder_timer.stop()
+        resize_final_res_timer = Timer("stitcher.stitch() func: resize_final_resolution")
+
         imgs = self.resize_final_resolution()
+
+        resize_final_res_timer.stop()
+        warp_final_res_timer = Timer("stitcher.stitch() func: warp_final_resolution")
+
         imgs, masks, corners, sizes = self.warp_final_resolution(imgs, self.cameras)
+
+        warp_final_res_timer.stop()
+        crop_final_res_timer = Timer("stitcher.stitch() func: crop_final_resolution")
+
         imgs, masks, corners, sizes = self.crop_final_resolution(
             imgs, masks, corners, sizes
         )
+
+        crop_final_res_timer.stop()
+        set_mask_timer = Timer("stitcher.stitch() func: set_masks")
+
         self.set_masks(masks)
-        imgs = self.compensate_exposure_errors(corners, imgs)
+        
+        set_mask_timer.stop()
+        initialize_composition_timer = Timer("stitcher.stitch() func: initialize_composition")
+
+        #imgs = self.compensate_exposure_errors(corners, imgs)
+        
+        initialize_composition_timer.stop()
+        seam_masks_timer = Timer("stitcher.stitch() func: resize_seam_masks")
+
         seam_masks = self.resize_seam_masks(seam_masks)
 
+        seam_masks_timer.stop()
+        initial_composition_timer = Timer("stitcher.stitch() func: initialize_composition")
+
         self.initialize_composition(corners, sizes)
+        
+        initial_composition_timer.stop()
+        blend_images_timer = Timer("stitcher.stitch() func: blend_images")
         self.blend_images(imgs, seam_masks, corners)
-        return self.create_final_panorama()
+
+        blend_images_timer.stop()
+        final_panorama_timer = Timer("stitcher.stitch() func: create_final_panorama")
+
+        pano = self.create_final_panorama()
+
+        final_panorama_timer.stop()
+
+        return pano
 
     def resize_medium_resolution(self):
         return list(self.images.resize(Images.Resolution.MEDIUM))
@@ -249,13 +313,41 @@ class Stitcher:
             self.blender.prepare(corners, sizes)
 
     def blend_images(self, imgs, masks, corners):
-        for idx, (img, mask, corner) in enumerate(zip(imgs, masks, corners)):
+        print("stitcher.blend_images: Type of imgs: ", type(imgs))
+        print("stitcher.blend_images: Type of masks: ", type(masks))
+        print("stitcher.blend_images: Type of corners: ", type(corners))
+
+        print("stitcher.blend_images: Items in imgs: ", imgs)
+        print("stitcher.blend_images: Items in masks: ", masks)
+        print("stitcher.blend_images: Items in corners: ", corners)       
+
+        counter = 0
+        for_loop_timer = Timer("stitcher.blend_images: for loop")
+        #for (img, mask, corner) in (zip(imgs, masks, corners)):
+        for corner in corners:
+            iter_timer = Timer("stitcher.blend_images: Iteration " + str(counter))
+            mask_next_timer = Timer("stitcher.blend_images: next(masks)")
+            mask = next(masks)
+            mask_next_timer.stop()
+            img_next_timer = Timer("stitcher.blend_images: next(imgs)")
+            img = next(imgs)
+            img_next_timer.stop()
             if self.timelapser.do_timelapse:
+                print("TIMELAPSING!")
                 self.timelapser.process_and_save_frame(
                     self.images.names[idx], img, corner
                 )
             else:
+                print("FEEEDING!")
+                #print("stitcher.blend_images: img: ", img)
+                #print("stitcher.blend_images: mask: ", mask)
+                #print("stitcher.blend_images: corner: ", corner)
+
                 self.blender.feed(img, mask, corner)
+            counter += 1
+            iter_timer.stop()
+        for_loop_timer.stop()
+        print("stitcher.blend_images: Counter: ", counter)
 
     def create_final_panorama(self):
         if not self.timelapser.do_timelapse:
@@ -280,3 +372,4 @@ class AffineStitcher(Stitcher):
 
     DEFAULT_SETTINGS = Stitcher.DEFAULT_SETTINGS.copy()
     DEFAULT_SETTINGS.update(AFFINE_DEFAULTS)
+

@@ -25,6 +25,8 @@ from stitching.subsetter import Subsetter
 from stitching.timelapser import Timelapser
 from stitching.warper import Warper
 
+import timer as Timer
+
 
 def create_parser():
     parser = argparse.ArgumentParser(prog="stitch.py")
