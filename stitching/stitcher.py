@@ -1,4 +1,8 @@
 from types import SimpleNamespace
+import numpy as np
+import json
+import os
+from cv2.detail import CameraParams
 
 from .blender import Blender
 from .camera_adjuster import CameraAdjuster
@@ -16,6 +20,10 @@ from .timelapser import Timelapser
 from .verbose import verbose_stitching
 from .warper import Warper
 
+def convert(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError("Object of type '%s' is not JSON serializable" % type(obj).__name__)
 
 class Stitcher:
     DEFAULT_SETTINGS = {
@@ -26,6 +34,7 @@ class Stitcher:
         "range_width": FeatureMatcher.DEFAULT_RANGE_WIDTH,
         "try_use_gpu": False,
         "match_conf": None,
+        "calibrate": False,
         "confidence_threshold": Subsetter.DEFAULT_CONFIDENCE_THRESHOLD,
         "matches_graph_dot_file": Subsetter.DEFAULT_MATCHES_GRAPH_DOT_FILE,
         "estimator": CameraEstimator.DEFAULT_CAMERA_ESTIMATOR,
@@ -86,28 +95,91 @@ class Stitcher:
         self.blender = Blender(args.blender_type, args.blend_strength)
         self.timelapser = Timelapser(args.timelapse, args.timelapse_prefix)
 
-        self.cameras = None
-        self.cameras_registered = False
+        if args.calibrate is True:
+            self.run_calibration = True
+            self.cameras = None
+            self.cameras_registered = False
+        else:
+
+            fp = os.path.expanduser('~/stitching/config.json')
+            file_exists = os.path.exists(fp)
+            self.cameras = []
+            if file_exists:
+                with open(fp, 'r') as f:
+                    data = json.load(f)
+
+                    left_params = data['left']
+                    right_params = data['right']
+
+                    left_cam = CameraParams()
+                    right_cam = CameraParams()
+                    self.cameras = [self.setup_cam(left_cam, left_params), self.setup_cam(right_cam, right_params)]
+
+                self.cameras_registered = True
+                self.run_calibration = False
+                self.estimate_scale(self.cameras)
+
+            else:
+                self.cameras = None
+                self.cameras_registered = False
+                self.run_calibration = True
+
+    def setup_cam(self, cam, cam_config):
+        cam.aspect = cam_config['aspect']
+        cam.focal = cam_config['focal']
+        cam.ppx = cam_config['ppx']
+        cam.ppy = cam_config['ppy']
+        cam.t = np.array(cam_config['t'], dtype=np.float32)
+        cam.R = np.array(cam_config['R'], dtype=np.float32)
+
+        return cam
 
     def stitch_verbose(self, images, feature_masks=[], verbose_dir=None):
         return verbose_stitching(self, images, feature_masks, verbose_dir)
+
+    def calibrate(self, feature_masks):
+
+        imgs = self.resize_medium_resolution()
+        features = self.find_features(imgs, feature_masks)
+        matches = self.match_features(features)
+        imgs, features, matches = self.subset(imgs, features, matches)
+        cameras = self.estimate_camera_parameters(features, matches)
+        cameras = self.refine_camera_parameters(features, matches, cameras)
+        cameras = self.perform_wave_correction(cameras)
+        self.estimate_scale(cameras)
+        self.cameras = cameras
+        
+        camera_dict = {}
+
+        for idx, camera in enumerate(cameras):
+
+            if idx == 0:
+                cam = 'left'
+            else:
+                cam = 'right'
+
+            camera_dict[cam] = {
+                'aspect': camera.aspect, 
+                'focal': camera.focal, 
+                'ppx': camera.ppx, 
+                'ppy': camera.ppy,
+                't': camera.t,
+                'R': camera.R
+            }
+        
+        with open(os.path.expanduser('~/stitching/config.json'), 'w') as f:
+            json.dump(camera_dict, f, default=convert)
+
+        self.cameras_registered = True
+        self.run_calibration = False
 
     def stitch(self, images, feature_masks=[]):
         self.images = Images.of(
             images, self.medium_megapix, self.low_megapix, self.final_megapix
         )
 
-        if not self.cameras_registered:
-            imgs = self.resize_medium_resolution()
-            features = self.find_features(imgs, feature_masks)
-            matches = self.match_features(features)
-            imgs, features, matches = self.subset(imgs, features, matches)
-            cameras = self.estimate_camera_parameters(features, matches)
-            cameras = self.refine_camera_parameters(features, matches, cameras)
-            cameras = self.perform_wave_correction(cameras)
-            self.estimate_scale(cameras)
-            self.cameras = cameras
-            self.cameras_registered = True
+        if not self.cameras_registered or self.run_calibration:
+            self.calibrate(feature_masks)
 
         imgs = self.resize_low_resolution()
         imgs, masks, corners, sizes = self.warp_low_resolution(imgs, self.cameras)

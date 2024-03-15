@@ -181,6 +181,12 @@ def create_parser():
         type=float,
     )
     parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="Calibrate cameras to current position. ",
+        default=False,
+    )
+    parser.add_argument(
         "--crop",
         action="store_true",
         help="Crop black borders around images caused by warping using the "
