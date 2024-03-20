@@ -187,6 +187,12 @@ def create_parser():
         default=False,
     )
     parser.add_argument(
+        "--megapixels",
+        type=str,
+        help="Specify image megapixel. ",
+        default=16,
+    )
+    parser.add_argument(
         "--crop",
         action="store_true",
         help="Crop black borders around images caused by warping using the "

@@ -35,6 +35,7 @@ class Stitcher:
         "try_use_gpu": False,
         "match_conf": None,
         "calibrate": False,
+        "megapixels": 16,
         "confidence_threshold": Subsetter.DEFAULT_CONFIDENCE_THRESHOLD,
         "matches_graph_dot_file": Subsetter.DEFAULT_MATCHES_GRAPH_DOT_FILE,
         "estimator": CameraEstimator.DEFAULT_CAMERA_ESTIMATOR,
@@ -81,6 +82,10 @@ class Stitcher:
         self.subsetter = Subsetter(
             args.confidence_threshold, args.matches_graph_dot_file
         )
+        self.megapixels = args.megapixels
+
+        self.megapixel_options = {'4': os.path.expanduser('~/stitching/4_mp_config.json'), '16': os.path.expanduser('~/stitching/16_mp_config.json'), '64': os.path.expanduser('~/stitching/64_mp_config.json')}
+
         self.camera_estimator = CameraEstimator(args.estimator)
         self.camera_adjuster = CameraAdjuster(
             args.adjuster, args.refinement_mask, args.confidence_threshold
@@ -100,8 +105,8 @@ class Stitcher:
             self.cameras = None
             self.cameras_registered = False
         else:
-
-            fp = os.path.expanduser('~/stitching/config.json')
+            
+            fp = self.megapixel_options[self.megapixels]
             file_exists = os.path.exists(fp)
             self.cameras = []
             if file_exists:
@@ -166,8 +171,8 @@ class Stitcher:
                 't': camera.t,
                 'R': camera.R
             }
-        
-        with open(os.path.expanduser('~/stitching/config.json'), 'w') as f:
+            
+        with open(self.megapixel_options[self.megapixels], 'w') as f:
             json.dump(camera_dict, f, default=convert)
 
         self.cameras_registered = True
