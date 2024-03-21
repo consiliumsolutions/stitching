@@ -35,7 +35,7 @@ class Stitcher:
         "try_use_gpu": False,
         "match_conf": None,
         "calibrate": False,
-        "megapixels": 16,
+        "megapixels": '16',
         "confidence_threshold": Subsetter.DEFAULT_CONFIDENCE_THRESHOLD,
         "matches_graph_dot_file": Subsetter.DEFAULT_MATCHES_GRAPH_DOT_FILE,
         "estimator": CameraEstimator.DEFAULT_CAMERA_ESTIMATOR,
