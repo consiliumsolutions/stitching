@@ -190,7 +190,7 @@ def create_parser():
         "--megapixels",
         type=str,
         help="Specify image megapixel. ",
-        default=16,
+        default='16',
     )
     parser.add_argument(
         "--crop",
