@@ -1,3 +1,4 @@
+import warnings
 from types import SimpleNamespace
 import numpy as np
 import json
@@ -14,7 +15,7 @@ from .feature_detector import FeatureDetector
 from .feature_matcher import FeatureMatcher
 from .images import Images
 from .seam_finder import SeamFinder
-from .stitching_error import StitchingError
+from .stitching_error import StitchingError, StitchingWarning
 from .subsetter import Subsetter
 from .timelapser import Timelapser
 from .verbose import verbose_stitching
@@ -62,6 +63,7 @@ class Stitcher:
     def initialize_stitcher(self, **kwargs):
         self.settings = self.DEFAULT_SETTINGS.copy()
         self.validate_kwargs(kwargs)
+        self.kwargs = kwargs
         self.settings.update(kwargs)
 
         args = SimpleNamespace(**self.settings)
@@ -357,3 +359,12 @@ class AffineStitcher(Stitcher):
 
     DEFAULT_SETTINGS = Stitcher.DEFAULT_SETTINGS.copy()
     DEFAULT_SETTINGS.update(AFFINE_DEFAULTS)
+
+    def initialize_stitcher(self, **kwargs):
+        for key, value in kwargs.items():
+            if key in self.AFFINE_DEFAULTS and value != self.AFFINE_DEFAULTS[key]:
+                warnings.warn(
+                    f"You are overwriting an affine default ({key}={self.AFFINE_DEFAULTS[key]}) with another value ({value}). Make sure this is intended",  # noqa: E501
+                    StitchingWarning,
+                )
+        super().initialize_stitcher(**kwargs)
