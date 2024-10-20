@@ -4,6 +4,7 @@ import numpy as np
 import json
 import os
 from cv2.detail import CameraParams
+from pathlib import Path
 
 from .blender import Blender
 from .camera_adjuster import CameraAdjuster
@@ -86,7 +87,7 @@ class Stitcher:
         )
         self.megapixels = args.megapixels
 
-        self.megapixel_options = {'4': os.path.expanduser('~/stitching/4_mp_config.json'), '16': os.path.expanduser('~/stitching/16_mp_config.json'), '64': os.path.expanduser('~/stitching/64_mp_config.json')}
+        self.megapixel_options = {'4': Path(os.path.expanduser('~/stitching/4_mp_config.json')), '16': Path(os.path.expanduser('~/stitching/16_mp_config.json')), '64': Path(os.path.expanduser('~/stitching/64_mp_config.json'))}
 
         self.camera_estimator = CameraEstimator(args.estimator)
         self.camera_adjuster = CameraAdjuster(
