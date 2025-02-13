@@ -37,6 +37,7 @@ class Stitcher:
         "try_use_gpu": False,
         "match_conf": None,
         "calibrate": False,
+        "calibration_file": None,
         "megapixels": '16',
         "confidence_threshold": Subsetter.DEFAULT_CONFIDENCE_THRESHOLD,
         "matches_graph_dot_file": Subsetter.DEFAULT_MATCHES_GRAPH_DOT_FILE,
@@ -87,7 +88,11 @@ class Stitcher:
         )
         self.megapixels = args.megapixels
 
-        self.megapixel_options = {'4': Path(os.path.expanduser('~/stitching/4_mp_config.json')), '16': Path(os.path.expanduser('~/stitching/16_mp_config.json')), '64': Path(os.path.expanduser('~/stitching/64_mp_config.json'))}
+        self.megapixel_options = {
+            '4': Path(os.path.expanduser('~/stitching/calibration/4mp/config.json')),
+            '16': Path(os.path.expanduser('~/stitching/calibration/16mp/config.json')),
+            '64': Path(os.path.expanduser('~/stitching/calibration/64mp/config.json'))
+        }
 
         self.camera_estimator = CameraEstimator(args.estimator)
         self.camera_adjuster = CameraAdjuster(
@@ -107,9 +112,18 @@ class Stitcher:
             self.run_calibration = True
             self.cameras = None
             self.cameras_registered = False
+            self.calibration_file = args.calibration_file
         else:
-            
-            fp = self.megapixel_options[self.megapixels]
+            # Check if calibration file exists, and if it
+            if args.calibration_file is not None and args.calibration_file is not "":
+                if not os.path.isabs(args.calibration_file):
+                    fp = os.path.expanduser(
+                        f"~/stitching/calibration/{self.megapixels}mp/{args.calibration_file}"
+                    )
+                else:
+                    fp = args.calibration_file
+            else:
+                fp = self.megapixel_options[self.megapixels]
             file_exists = os.path.exists(fp)
             self.cameras = []
             if file_exists:
@@ -174,8 +188,19 @@ class Stitcher:
                 't': camera.t,
                 'R': camera.R
             }
-            
-        with open(self.megapixel_options[self.megapixels], 'w') as f:
+
+        # save to the right calibration file
+        if self.calibration_file is not None and self.calibration_file is not "":
+            if not os.path.isabs(self.calibration_file):
+                fp = os.path.expanduser(
+                    f"~/stitching/calibration/{self.megapixels}mp/{self.calibration_file}"
+                )
+            else:
+                fp = self.calibration_file
+        else:
+            fp = self.megapixel_options[self.megapixels]
+
+        with open(fp, 'w') as f:
             json.dump(camera_dict, f, default=convert)
 
         self.cameras_registered = True
