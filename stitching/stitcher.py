@@ -115,7 +115,7 @@ class Stitcher:
             self.calibration_file = args.calibration_file
         else:
             # Check if calibration file exists, and if it
-            if args.calibration_file is not None and args.calibration_file is not "":
+            if args.calibration_file is not None and args.calibration_file != "":
                 if not os.path.isabs(args.calibration_file):
                     fp = os.path.expanduser(
                         f"~/stitching/calibration/{self.megapixels}mp/{args.calibration_file}"
@@ -145,6 +145,7 @@ class Stitcher:
                 self.cameras = None
                 self.cameras_registered = False
                 self.run_calibration = True
+                self.calibration_file = args.calibration_file
 
     def setup_cam(self, cam, cam_config):
         cam.aspect = cam_config['aspect']
@@ -190,7 +191,7 @@ class Stitcher:
             }
 
         # save to the right calibration file
-        if self.calibration_file is not None and self.calibration_file is not "":
+        if self.calibration_file is not None and self.calibration_file != "":
             if not os.path.isabs(self.calibration_file):
                 fp = os.path.expanduser(
                     f"~/stitching/calibration/{self.megapixels}mp/{self.calibration_file}"
