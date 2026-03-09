@@ -5,6 +5,7 @@ import json
 import os
 from cv2.detail import CameraParams
 from pathlib import Path
+import cv2 as cv
 
 from .blender import Blender
 from .camera_adjuster import CameraAdjuster
@@ -21,6 +22,8 @@ from .subsetter import Subsetter
 from .timelapser import Timelapser
 from .verbose import verbose_stitching
 from .warper import Warper
+
+CALIBRATION_ENV = "STITCHING_CALIBRATION_DIR"
 
 def convert(obj):
     if isinstance(obj, np.ndarray):
@@ -39,6 +42,7 @@ class Stitcher:
         "calibrate": False,
         "calibration_file": None,
         "megapixels": '16',
+        "alignment_refinement": True,
         "confidence_threshold": Subsetter.DEFAULT_CONFIDENCE_THRESHOLD,
         "matches_graph_dot_file": Subsetter.DEFAULT_MATCHES_GRAPH_DOT_FILE,
         "estimator": CameraEstimator.DEFAULT_CAMERA_ESTIMATOR,
@@ -86,13 +90,35 @@ class Stitcher:
         self.subsetter = Subsetter(
             args.confidence_threshold, args.matches_graph_dot_file
         )
-        self.megapixels = args.megapixels
-
+        self.megapixels = str(args.megapixels)
+        self.calibration_root = self._get_calibration_root()
         self.megapixel_options = {
-            '4': Path(os.path.expanduser('~/stitching/calibration/4mp/config.json')),
-            '16': Path(os.path.expanduser('~/stitching/calibration/16mp/config.json')),
-            '64': Path(os.path.expanduser('~/stitching/calibration/64mp/config.json'))
+            "4": self.calibration_root / "4mp" / "config.json",
+            "16": self.calibration_root / "16mp" / "config.json",
+            "64": self.calibration_root / "64mp" / "config.json",
         }
+        self.calibration_path = self._resolve_calibration_path(args.calibration_file)
+        self.calibration_file = self.calibration_path
+        self._calibration_camera_data = None
+        self._calibration_image_size = None
+        self.alignment_shift = (0.0, 0.0)
+        self.refine_alignment = args.alignment_refinement
+        self._has_preloaded_calibration = bool(self.calibration_path)
+
+        self.cameras = None
+        self.cameras_registered = False
+        self.run_calibration = bool(args.calibrate)
+
+        if not self.run_calibration and self.calibration_path:
+            calibration_payload = self._load_calibration(self.calibration_path)
+            if calibration_payload:
+                self._calibration_camera_data, self._calibration_image_size = (
+                    calibration_payload
+                )
+                self.cameras_registered = True
+                self._has_preloaded_calibration = True
+            else:
+                self.run_calibration = True
 
         self.camera_estimator = CameraEstimator(args.estimator)
         self.camera_adjuster = CameraAdjuster(
@@ -108,45 +134,6 @@ class Stitcher:
         self.blender = Blender(args.blender_type, args.blend_strength)
         self.timelapser = Timelapser(args.timelapse, args.timelapse_prefix)
 
-        if args.calibrate is True:
-            self.run_calibration = True
-            self.cameras = None
-            self.cameras_registered = False
-            self.calibration_file = args.calibration_file
-        else:
-            # Check if calibration file exists, and if it
-            if args.calibration_file is not None and args.calibration_file != "":
-                if not os.path.isabs(args.calibration_file):
-                    fp = os.path.expanduser(
-                        f"~/stitching/calibration/{self.megapixels}mp/{args.calibration_file}"
-                    )
-                else:
-                    fp = args.calibration_file
-            else:
-                fp = self.megapixel_options[self.megapixels]
-            file_exists = os.path.exists(fp)
-            self.cameras = []
-            if file_exists:
-                with open(fp, 'r') as f:
-                    data = json.load(f)
-
-                    left_params = data['left']
-                    right_params = data['right']
-
-                    left_cam = CameraParams()
-                    right_cam = CameraParams()
-                    self.cameras = [self.setup_cam(left_cam, left_params), self.setup_cam(right_cam, right_params)]
-
-                self.cameras_registered = True
-                self.run_calibration = False
-                self.estimate_scale(self.cameras)
-
-            else:
-                self.cameras = None
-                self.cameras_registered = False
-                self.run_calibration = True
-                self.calibration_file = args.calibration_file
-
     def setup_cam(self, cam, cam_config):
         cam.aspect = cam_config['aspect']
         cam.focal = cam_config['focal']
@@ -157,12 +144,228 @@ class Stitcher:
 
         return cam
 
+    def _get_calibration_root(self):
+        custom_root = os.environ.get(CALIBRATION_ENV)
+        if custom_root:
+            return Path(os.path.expanduser(custom_root))
+        return Path(__file__).resolve().parent.parent / "calibration"
+
+    def _resolve_calibration_path(self, calibration_file):
+        if calibration_file in (None, ""):
+            return None
+
+        candidate = Path(os.path.expanduser(calibration_file))
+        if candidate.exists():
+            return candidate
+
+        if not candidate.is_absolute():
+            cwd_candidate = Path.cwd() / candidate
+            if cwd_candidate.exists():
+                return cwd_candidate
+            return (
+                self.calibration_root
+                / f"{self.megapixels}mp"
+                / candidate.name
+            )
+
+        return candidate
+
+    def _load_calibration(self, path):
+        if path is None:
+            return None
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return None
+
+        camera_data, base_size = self._parse_calibration_payload(data)
+        if camera_data is None:
+            return None
+        return camera_data, base_size
+
+    def _parse_calibration_payload(self, data):
+        if not data:
+            return None, None
+
+        camera_container = data.get("cameras", data)
+        left_params = camera_container.get("left")
+        right_params = camera_container.get("right")
+        if not left_params or not right_params:
+            return None, None
+
+        image_size = data.get("image_size")
+        base_size = None
+        if image_size:
+            width = image_size.get("width")
+            height = image_size.get("height")
+            if width and height:
+                base_size = (int(width), int(height))
+        if base_size is None:
+            base_size = self._infer_image_size(left_params)
+
+        return [left_params, right_params], base_size
+
+    @staticmethod
+    def _infer_image_size(cam_params):
+        ppx = cam_params.get("ppx")
+        ppy = cam_params.get("ppy")
+        if ppx and ppy:
+            return (int(round(ppx * 2)), int(round(ppy * 2)))
+        return None
+
+    @staticmethod
+    def _camera_to_dict(camera):
+        return {
+            "aspect": float(camera.aspect),
+            "focal": float(camera.focal),
+            "ppx": float(camera.ppx),
+            "ppy": float(camera.ppy),
+            "t": camera.t,
+            "R": camera.R,
+        }
+
+    def _serialize_calibration(self, cameras, base_size):
+        payload = {
+            "cameras": {
+                "left": self._camera_to_dict(cameras[0]),
+                "right": self._camera_to_dict(cameras[1]),
+            }
+        }
+        if base_size:
+            payload["image_size"] = {"width": int(base_size[0]), "height": int(base_size[1])}
+        return payload
+
+    def _write_calibration(self, payload):
+        if self.calibration_file is None:
+            return
+        self.calibration_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.calibration_file, "w") as f:
+            json.dump(payload, f, default=convert)
+
+    @staticmethod
+    def _get_scale_from_sizes(base_size, target_size):
+        if base_size is None or target_size is None:
+            return 1.0, 1.0
+        if base_size[0] == 0 or base_size[1] == 0:
+            return 1.0, 1.0
+        return target_size[0] / base_size[0], target_size[1] / base_size[1]
+
+    @staticmethod
+    def _scale_camera(camera, scale_x, scale_y):
+        scale = (scale_x + scale_y) / 2
+        camera.focal *= scale
+        camera.ppx *= scale_x
+        camera.ppy *= scale_y
+        if not np.isclose(scale_x, scale_y):
+            camera.aspect *= scale_y / scale_x
+
+    def _create_cameras_from_calibration(self, medium_size):
+        if self._calibration_camera_data is None:
+            return None
+
+        scale_x, scale_y = self._get_scale_from_sizes(
+            self._calibration_image_size, medium_size
+        )
+
+        cameras = []
+        for params in self._calibration_camera_data:
+            cam = CameraParams()
+            self.setup_cam(cam, params)
+            self._scale_camera(cam, scale_x, scale_y)
+            cameras.append(cam)
+        self.estimate_scale(cameras)
+        return cameras
+
+    def _compute_alignment_shift(self, imgs, masks, corners, sizes):
+        if len(imgs) != 2:
+            return (0.0, 0.0)
+
+        roi = cv.detail.resultRoi(corners=corners, sizes=sizes)
+        x0, y0, width, height = [int(round(v)) for v in roi]
+        canvas_shape = (height, width)
+
+        gray_imgs = [
+            cv.cvtColor(img, cv.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            for img in imgs
+        ]
+
+        canvases = [
+            np.zeros(canvas_shape, dtype=np.float32),
+            np.zeros(canvas_shape, dtype=np.float32),
+        ]
+        canvas_masks = [
+            np.zeros(canvas_shape, dtype=np.uint8),
+            np.zeros(canvas_shape, dtype=np.uint8),
+        ]
+
+        for idx, (img, mask, corner) in enumerate(
+            zip(gray_imgs, masks, corners)
+        ):
+            x_start = int(round(corner[0] - x0))
+            y_start = int(round(corner[1] - y0))
+            x_start = max(x_start, 0)
+            y_start = max(y_start, 0)
+            h_img, w_img = img.shape[:2]
+            x_end = min(x_start + w_img, canvas_shape[1])
+            y_end = min(y_start + h_img, canvas_shape[0])
+
+            canvases[idx][y_start:y_end, x_start:x_end] = img[
+                0 : y_end - y_start, 0 : x_end - x_start
+            ]
+            canvas_masks[idx][y_start:y_end, x_start:x_end] = mask[
+                0 : y_end - y_start, 0 : x_end - x_start
+            ]
+
+        overlap = cv.bitwise_and(canvas_masks[0], canvas_masks[1])
+        if np.count_nonzero(overlap) < 25:
+            return (0.0, 0.0)
+
+        x, y, w, h = cv.boundingRect(overlap)
+        if w == 0 or h == 0:
+            return (0.0, 0.0)
+
+        overlap_mask = overlap[y : y + h, x : x + w].astype(np.float32) / 255.0
+        roi1 = canvases[0][y : y + h, x : x + w] * overlap_mask
+        roi2 = canvases[1][y : y + h, x : x + w] * overlap_mask
+
+        if np.count_nonzero(overlap_mask) == 0:
+            return (0.0, 0.0)
+
+        shift, _ = cv.phaseCorrelate(roi2, roi1)
+
+        max_allowed_shift = max(w, h) * 0.25
+        if (
+            abs(shift[0]) > max_allowed_shift
+            or abs(shift[1]) > max_allowed_shift
+        ):
+            return (0.0, 0.0)
+
+        return shift
+
+    def _apply_alignment_shift(self, corners, shift):
+        if len(corners) != 2:
+            return corners
+        dx, dy = shift
+        if np.isclose(dx, 0.0) and np.isclose(dy, 0.0):
+            return corners
+        half_shift = (-dx / 2.0, -dy / 2.0)
+        return [
+            (
+                float(corners[0][0] + half_shift[0]),
+                float(corners[0][1] + half_shift[1]),
+            ),
+            (
+                float(corners[1][0] - half_shift[0]),
+                float(corners[1][1] - half_shift[1]),
+            ),
+        ]
+
     def stitch_verbose(self, images, feature_masks=[], verbose_dir=None):
         return verbose_stitching(self, images, feature_masks, verbose_dir)
 
-    def calibrate(self, feature_masks):
-
-        imgs = self.resize_medium_resolution()
+    def calibrate(self, feature_masks, medium_imgs=None):
+        imgs = medium_imgs if medium_imgs is not None else self.resize_medium_resolution()
         features = self.find_features(imgs, feature_masks)
         matches = self.match_features(features)
         imgs, features, matches = self.subset(imgs, features, matches)
@@ -171,39 +374,23 @@ class Stitcher:
         cameras = self.perform_wave_correction(cameras)
         self.estimate_scale(cameras)
         self.cameras = cameras
-        
-        camera_dict = {}
 
-        for idx, camera in enumerate(cameras):
-
-            if idx == 0:
-                cam = 'left'
-            else:
-                cam = 'right'
-
-            camera_dict[cam] = {
-                'aspect': camera.aspect, 
-                'focal': camera.focal, 
-                'ppx': camera.ppx, 
-                'ppy': camera.ppy,
-                't': camera.t,
-                'R': camera.R
-            }
-
-        # save to the right calibration file
-        if self.calibration_file is not None and self.calibration_file != "":
-            if not os.path.isabs(self.calibration_file):
-                fp = os.path.expanduser(
-                    f"~/stitching/calibration/{self.megapixels}mp/{self.calibration_file}"
-                )
-            else:
-                fp = self.calibration_file
+        persist_calibration = (
+            self.calibration_file is not None or self._has_preloaded_calibration
+        )
+        if persist_calibration:
+            medium_sizes = self.images.get_scaled_img_sizes(Images.Resolution.MEDIUM)
+            base_size = medium_sizes[0] if len(medium_sizes) > 0 else None
+            calibration_payload = self._serialize_calibration(cameras, base_size)
+            self._calibration_camera_data = [
+                calibration_payload["cameras"]["left"],
+                calibration_payload["cameras"]["right"],
+            ]
+            self._calibration_image_size = base_size
+            self._write_calibration(calibration_payload)
         else:
-            fp = self.megapixel_options[self.megapixels]
-
-        with open(fp, 'w') as f:
-            json.dump(camera_dict, f, default=convert)
-
+            self._calibration_camera_data = None
+            self._calibration_image_size = None
         self.cameras_registered = True
         self.run_calibration = False
 
@@ -212,11 +399,52 @@ class Stitcher:
             images, self.medium_megapix, self.low_megapix, self.final_megapix
         )
 
-        if not self.cameras_registered or self.run_calibration:
-            self.calibrate(feature_masks)
+        if (
+            self.cameras_registered
+            and self._calibration_camera_data
+            and len(self._calibration_camera_data) != len(self.images.names)
+        ):
+            self.cameras_registered = False
+            self.run_calibration = True
+
+        if self.cameras and len(self.cameras) != len(self.images.names):
+            self.cameras = None
+            self.cameras_registered = False
+            self.run_calibration = True
+
+        medium_imgs = self.resize_medium_resolution()
+        medium_size = Images.get_image_size(medium_imgs[0])
+
+        if (
+            self.cameras_registered
+            and self.cameras is None
+            and self._has_preloaded_calibration
+        ):
+            self.cameras = self._create_cameras_from_calibration(medium_size)
+
+        needs_calibration = (
+            self.cameras is None
+            or not self.cameras_registered
+            or self.run_calibration
+            or (bool(feature_masks) and not self._has_preloaded_calibration)
+        )
+
+        if needs_calibration:
+            self.calibrate(feature_masks, medium_imgs)
 
         imgs = self.resize_low_resolution()
         imgs, masks, corners, sizes = self.warp_low_resolution(imgs, self.cameras)
+        if (
+            self.refine_alignment
+            and self._has_preloaded_calibration
+            and len(corners) == 2
+        ):
+            self.alignment_shift = self._compute_alignment_shift(
+                imgs, masks, corners, sizes
+            )
+            corners = self._apply_alignment_shift(corners, self.alignment_shift)
+        else:
+            self.alignment_shift = (0.0, 0.0)
         self.prepare_cropper(imgs, masks, corners, sizes)
         imgs, masks, corners, sizes = self.crop_low_resolution(
             imgs, masks, corners, sizes
@@ -226,6 +454,12 @@ class Stitcher:
 
         imgs = self.resize_final_resolution()
         imgs, masks, corners, sizes = self.warp_final_resolution(imgs, self.cameras)
+        if (
+            self.refine_alignment
+            and self._has_preloaded_calibration
+            and len(corners) == 2
+        ):
+            corners = self._apply_alignment_shift(corners, self.alignment_shift)
         imgs, masks, corners, sizes = self.crop_final_resolution(
             imgs, masks, corners, sizes
         )

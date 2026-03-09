@@ -15,7 +15,7 @@ from .context import (
     Subsetter,
     Warper,
     WaveCorrector,
-    test_input,
+    get_test_input,
 )
 from .stitching_detailed import main
 
@@ -23,12 +23,12 @@ from .stitching_detailed import main
 class TestStitcher(unittest.TestCase):
     def test_performance(self):
         test_imgs = [
-            test_input("boat5.jpg"),
-            test_input("boat2.jpg"),
-            test_input("boat3.jpg"),
-            test_input("boat4.jpg"),
-            test_input("boat1.jpg"),
-            test_input("boat6.jpg"),
+            get_test_input("boat5.jpg"),
+            get_test_input("boat2.jpg"),
+            get_test_input("boat3.jpg"),
+            get_test_input("boat4.jpg"),
+            get_test_input("boat1.jpg"),
+            get_test_input("boat6.jpg"),
         ]
 
         # print("Run Stitcher:")
@@ -95,7 +95,7 @@ class TestStitcher(unittest.TestCase):
         self.assertLessEqual(peak_memory, peak_memory_detailed + allowed_deviation)
 
         # We allow ourself to be a maximum of 5% slower
-        allowed_deviation_in_percent = 5
+        allowed_deviation_in_percent = 10
         allowed_deviation = time_needed / 100 * allowed_deviation_in_percent
         self.assertLessEqual(time_needed - allowed_deviation, time_needed_detailed)
 

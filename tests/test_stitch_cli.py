@@ -7,7 +7,7 @@ from unittest.mock import patch
 import cv2 as cv
 import numpy as np
 
-from .context import create_parser, main, test_input, test_output
+from .context import create_parser, get_test_input, get_test_output, main
 
 
 class TestCLI(unittest.TestCase):
@@ -19,10 +19,10 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(parsed.low_megapix, 1.0)
 
     def test_main(self):
-        output = test_output("weir_from_cli.jpg")
+        output = get_test_output("weir_from_cli.jpg")
         test_args = [
             "stitch.py",
-            test_input("weir_?.jpg"),
+            get_test_input("weir_?.jpg"),
             "--final_megapix",
             "0.05",
             "--output",
@@ -39,10 +39,10 @@ class TestCLI(unittest.TestCase):
 
     def test_main_verbose(self):
         name = datetime.now().strftime("%Y%m%d_%H%M%S") + "_verbose_results"
-        output = test_output(name)
+        output = get_test_output(name)
         test_args = [
             "stitch.py",
-            test_input("weir_?.jpg"),
+            get_test_input("weir_?.jpg"),
             "--final_megapix",
             "0.05",
             "--verbose",
@@ -59,10 +59,10 @@ class TestCLI(unittest.TestCase):
             )
 
     def test_main_affine(self):
-        output = test_output("budapest_from_cli.jpg")
+        output = get_test_output("budapest_from_cli.jpg")
         test_args = [
             "stitch.py",
-            test_input("budapest?.jpg"),
+            get_test_input("budapest?.jpg"),
             "--affine",
             "--detector",
             "sift",
@@ -80,14 +80,14 @@ class TestCLI(unittest.TestCase):
             )
 
     def test_main_feature_masks(self):
-        output = test_output("features_with_mask_from_cli.jpg")
+        output = get_test_output("features_with_mask_from_cli.jpg")
         test_args = [
             "stitch.py",
-            test_input("barcode1.png"),
-            test_input("barcode2.png"),
+            get_test_input("barcode1.png"),
+            get_test_input("barcode2.png"),
             "--feature_masks",
-            test_input("mask1.png"),
-            test_input("mask2.png"),
+            get_test_input("mask1.png"),
+            get_test_input("mask2.png"),
             "--output",
             output,
         ]
