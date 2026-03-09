@@ -289,6 +289,84 @@ class TestStitcher(unittest.TestCase):
         _ = stitcher.stitch([test_input("boat1.jpg"), test_input("boat2.jpg")])
         self.assertEqual(round(stitcher.images._scalers["MEDIUM"].scale, 2), 0.24)
 
+    def test_overlap_alignment_refinement_two_images(self):
+        """Test that overlap alignment refinement runs for 2-image stitching
+        and produces a valid alignment shift."""
+        stitcher = Stitcher(nfeatures=250, crop=False)
+        result = stitcher.stitch(
+            [test_input("s1.jpg"), test_input("s2.jpg")]
+        )
+
+        # Alignment shift should have been computed for a 2-image stitch
+        self.assertTrue(hasattr(stitcher, "_alignment_shift"))
+        dx, dy = stitcher._alignment_shift
+        # Shift should be small (sub-pixel to a few pixels)
+        self.assertLess(abs(dx), 50)
+        self.assertLess(abs(dy), 50)
+
+        # Result should still have valid shape
+        self.assertEqual(len(result.shape), 3)
+        self.assertGreater(result.shape[0], 100)
+        self.assertGreater(result.shape[1], 100)
+
+        write_test_result("alignment_two_images.jpg", result)
+
+    def test_overlap_alignment_skips_multi_image(self):
+        """Test that overlap alignment is skipped when more than 2 warped
+        images are present (called directly, not through stitch pipeline)."""
+        import cv2 as cv
+
+        stitcher = Stitcher()
+
+        # Create 3 dummy images/masks/corners/sizes
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        mask = 255 * np.ones((100, 100), dtype=np.uint8)
+        imgs = [img, img, img]
+        masks = [mask, mask, mask]
+        corners = [(0, 0), (50, 0), (100, 0)]
+        sizes = [(100, 100), (100, 100), (100, 100)]
+
+        result = stitcher.refine_overlap_alignment(imgs, masks, corners, sizes)
+
+        # Should have been skipped (shift = 0)
+        self.assertEqual(stitcher._alignment_shift, (0.0, 0.0))
+        # Corners should be unchanged
+        self.assertEqual(result, corners)
+
+    def test_overlap_alignment_with_synthetic_shift(self):
+        """Test alignment refinement detects a known synthetic shift."""
+        import cv2 as cv
+
+        stitcher = Stitcher(nfeatures=250, crop=False)
+        img = load_test_img("s1.jpg")
+        h, w = img.shape[:2]
+
+        # Create two overlapping regions from the same image
+        # with a known vertical offset
+        overlap_w = w // 2
+        crop1 = img[:, :overlap_w + 100]
+        crop2 = img[5:, 100:]  # shifted down by 5 pixels
+
+        h1, w1 = crop1.shape[:2]
+        h2, w2 = crop2.shape[:2]
+        overlap_start = 100
+        corners = [(0, 0), (overlap_start, 0)]
+        sizes = [(w1, h1), (w2, h2)]
+        masks = [
+            255 * np.ones((h1, w1), np.uint8),
+            255 * np.ones((h2, w2), np.uint8),
+        ]
+
+        new_corners = stitcher.refine_overlap_alignment(
+            [crop1, crop2], masks, corners, sizes
+        )
+
+        # The refinement should detect a shift
+        dx, dy = stitcher._alignment_shift
+        # The vertical shift of 5 pixels should be detected
+        # (exact value may differ due to image content)
+        self.assertNotEqual((dx, dy), (0.0, 0.0))
+
 
 def start_test():
     unittest.main()

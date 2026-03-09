@@ -1,5 +1,6 @@
 import warnings
 from types import SimpleNamespace
+import cv2 as cv
 import numpy as np
 import json
 import os
@@ -107,6 +108,9 @@ class Stitcher:
         self.seam_finder = SeamFinder(args.finder)
         self.blender = Blender(args.blender_type, args.blend_strength)
         self.timelapser = Timelapser(args.timelapse, args.timelapse_prefix)
+
+        self._alignment_shift = (0.0, 0.0)
+        self._alignment_low_sizes = []
 
         if args.calibrate is True:
             self.run_calibration = True
@@ -217,6 +221,7 @@ class Stitcher:
 
         imgs = self.resize_low_resolution()
         imgs, masks, corners, sizes = self.warp_low_resolution(imgs, self.cameras)
+        corners = self.refine_overlap_alignment(imgs, masks, corners, sizes)
         self.prepare_cropper(imgs, masks, corners, sizes)
         imgs, masks, corners, sizes = self.crop_low_resolution(
             imgs, masks, corners, sizes
@@ -226,6 +231,7 @@ class Stitcher:
 
         imgs = self.resize_final_resolution()
         imgs, masks, corners, sizes = self.warp_final_resolution(imgs, self.cameras)
+        corners = self.apply_final_alignment(corners, sizes)
         imgs, masks, corners, sizes = self.crop_final_resolution(
             imgs, masks, corners, sizes
         )
@@ -273,6 +279,128 @@ class Stitcher:
 
     def estimate_scale(self, cameras):
         self.warper.set_scale(cameras)
+
+    def refine_overlap_alignment(self, imgs, masks, corners, sizes):
+        """Refine alignment between warped images using phase correlation.
+
+        For a two-camera fixed setup, after warping with calibrated
+        camera parameters, there may be small misalignment in the overlap
+        region. This method detects the misalignment using phase
+        correlation and adjusts the corner positions to correct it.
+
+        The computed shift is stored internally and can be applied to
+        final-resolution corners via apply_final_alignment().
+        """
+        self._alignment_shift = (0.0, 0.0)
+        self._alignment_low_sizes = [tuple(s) for s in sizes]
+
+        if len(imgs) != 2:
+            return corners
+
+        img1, img2 = imgs[0], imgs[1]
+        mask1, mask2 = masks[0], masks[1]
+
+        x1, y1 = corners[0]
+        w1, h1 = sizes[0]
+        x2, y2 = corners[1]
+        w2, h2 = sizes[1]
+
+        ox_start = max(x1, x2)
+        oy_start = max(y1, y2)
+        ox_end = min(x1 + w1, x2 + w2)
+        oy_end = min(y1 + h1, y2 + h2)
+
+        overlap_w = ox_end - ox_start
+        overlap_h = oy_end - oy_start
+
+        min_overlap = 32
+        if overlap_w < min_overlap or overlap_h < min_overlap:
+            return corners
+
+        roi1_x = ox_start - x1
+        roi1_y = oy_start - y1
+        roi2_x = ox_start - x2
+        roi2_y = oy_start - y2
+
+        crop1 = img1[roi1_y:roi1_y + overlap_h, roi1_x:roi1_x + overlap_w]
+        crop2 = img2[roi2_y:roi2_y + overlap_h, roi2_x:roi2_x + overlap_w]
+
+        mcrop1 = mask1[roi1_y:roi1_y + overlap_h, roi1_x:roi1_x + overlap_w]
+        mcrop2 = mask2[roi2_y:roi2_y + overlap_h, roi2_x:roi2_x + overlap_w]
+
+        combined_mask = cv.bitwise_and(mcrop1, mcrop2)
+        valid_pixels = np.count_nonzero(combined_mask)
+        total_pixels = overlap_w * overlap_h
+        if total_pixels == 0 or valid_pixels / total_pixels < 0.3:
+            return corners
+
+        if len(crop1.shape) == 3:
+            gray1 = cv.cvtColor(crop1, cv.COLOR_BGR2GRAY).astype(np.float64)
+            gray2 = cv.cvtColor(crop2, cv.COLOR_BGR2GRAY).astype(np.float64)
+        else:
+            gray1 = crop1.astype(np.float64)
+            gray2 = crop2.astype(np.float64)
+
+        if gray1.shape[0] < 2 or gray1.shape[1] < 2:
+            return corners
+
+        mask_float = combined_mask.astype(np.float64) / 255.0
+        gray1 = gray1 * mask_float
+        gray2 = gray2 * mask_float
+
+        hann = cv.createHanningWindow(
+            (gray1.shape[1], gray1.shape[0]), cv.CV_64F
+        )
+        gray1 = gray1 * hann
+        gray2 = gray2 * hann
+
+        (dx, dy), response = cv.phaseCorrelate(gray1, gray2)
+
+        if response < 0.05:
+            return corners
+
+        max_shift = min(overlap_w, overlap_h) * 0.15
+        dx = float(np.clip(dx, -max_shift, max_shift))
+        dy = float(np.clip(dy, -max_shift, max_shift))
+
+        self._alignment_shift = (dx, dy)
+
+        new_corners = list(corners)
+        new_corners[1] = (
+            corners[1][0] - int(round(dx)),
+            corners[1][1] - int(round(dy)),
+        )
+        return new_corners
+
+    def apply_final_alignment(self, corners, sizes):
+        """Apply the alignment shift computed at low resolution to
+        final-resolution corners, scaling appropriately."""
+        dx, dy = self._alignment_shift
+        if dx == 0.0 and dy == 0.0:
+            return corners
+        if len(corners) != 2:
+            return corners
+
+        low_w = self._alignment_low_sizes[0][0]
+        low_h = self._alignment_low_sizes[0][1]
+        final_w = sizes[0][0]
+        final_h = sizes[0][1]
+
+        if low_w == 0 or low_h == 0:
+            return corners
+
+        scale_x = final_w / low_w
+        scale_y = final_h / low_h
+
+        dx_final = dx * scale_x
+        dy_final = dy * scale_y
+
+        new_corners = list(corners)
+        new_corners[1] = (
+            corners[1][0] - int(round(dx_final)),
+            corners[1][1] - int(round(dy_final)),
+        )
+        return new_corners
 
     def resize_low_resolution(self, imgs=None):
         return list(self.images.resize(Images.Resolution.LOW, imgs))

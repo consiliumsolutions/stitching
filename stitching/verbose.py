@@ -84,6 +84,10 @@ def verbose_stitching(stitcher, images, feature_masks=[], verbose_dir=None):
     low_masks = list(warper.create_and_warp_masks(low_sizes, cameras, camera_aspect))
     low_corners, low_sizes = warper.warp_rois(low_sizes, cameras, camera_aspect)
 
+    low_corners = stitcher.refine_overlap_alignment(
+        low_imgs, low_masks, low_corners, low_sizes
+    )
+
     final_sizes = images.get_scaled_img_sizes(Images.Resolution.FINAL)
     camera_aspect = images.get_ratio(Images.Resolution.MEDIUM, Images.Resolution.FINAL)
 
@@ -93,6 +97,8 @@ def verbose_stitching(stitcher, images, feature_masks=[], verbose_dir=None):
         warper.create_and_warp_masks(final_sizes, cameras, camera_aspect)
     )
     final_corners, final_sizes = warper.warp_rois(final_sizes, cameras, camera_aspect)
+
+    final_corners = stitcher.apply_final_alignment(final_corners, final_sizes)
 
     for idx, warped_img in enumerate(final_imgs):
         write_verbose_result(_dir, f"04_warped_img{idx + 1}.jpg", warped_img)
