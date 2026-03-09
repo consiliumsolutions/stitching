@@ -7,9 +7,12 @@ Usage:
 Example:
     python run_stitch.py left.jpg right.jpg result.jpg
 """
+import os
 import sys
 import cv2 as cv
 from stitching import Stitcher
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def main():
@@ -34,12 +37,15 @@ def main():
     print(f"Left image:  {left.shape[1]}x{left.shape[0]}")
     print(f"Right image: {right.shape[1]}x{right.shape[0]}")
 
+    calibration_file = os.path.join(SCRIPT_DIR, "calibration", "16mp", "config.json")
+
     settings = {
         "detector": "sift",
         "medium_megapix": 1,
         "low_megapix": 0.3,
         "confidence_threshold": 0.1,
         "megapixels": "16",
+        "calibration_file": calibration_file,
     }
 
     stitcher = Stitcher(**settings)
