@@ -1,6 +1,7 @@
 import warnings
 from types import SimpleNamespace
 import numpy as np
+import cv2 as cv
 import json
 import os
 from cv2.detail import CameraParams
@@ -57,6 +58,7 @@ class Stitcher:
         "blend_strength": Blender.DEFAULT_BLEND_STRENGTH,
         "timelapse": Timelapser.DEFAULT_TIMELAPSE,
         "timelapse_prefix": Timelapser.DEFAULT_TIMELAPSE_PREFIX,
+        "force_realign": False,
     }
 
     def __init__(self, **kwargs):
@@ -67,8 +69,13 @@ class Stitcher:
         self.validate_kwargs(kwargs)
         self.kwargs = kwargs
         self.settings.update(kwargs)
+        self._alignment_correction = (0.0, 0.0)
+        self._alignment_correction_cached = False
+        self._calibration_fp = None
+        self._strip_corrections = None
 
         args = SimpleNamespace(**self.settings)
+        self._force_realign = args.force_realign
         self.medium_megapix = args.medium_megapix
         self.low_megapix = args.low_megapix
         self.final_megapix = args.final_megapix
@@ -140,6 +147,12 @@ class Stitcher:
                 self.cameras_registered = True
                 self.run_calibration = False
                 self.estimate_scale(self.cameras)
+                self._calibration_fp = fp
+
+                ac = data.get('alignment_correction')
+                if ac is not None:
+                    self._alignment_correction = (int(ac[0]), int(ac[1]))
+                    self._alignment_correction_cached = True
 
             else:
                 self.cameras = None
@@ -217,6 +230,10 @@ class Stitcher:
 
         imgs = self.resize_low_resolution()
         imgs, masks, corners, sizes = self.warp_low_resolution(imgs, self.cameras)
+
+        # Refine alignment in the overlap region to correct seam misalignment
+        corners = self.refine_overlap_alignment(imgs, masks, corners)
+
         self.prepare_cropper(imgs, masks, corners, sizes)
         imgs, masks, corners, sizes = self.crop_low_resolution(
             imgs, masks, corners, sizes
@@ -226,6 +243,10 @@ class Stitcher:
 
         imgs = self.resize_final_resolution()
         imgs, masks, corners, sizes = self.warp_final_resolution(imgs, self.cameras)
+
+        # Apply the same alignment correction scaled to final resolution
+        corners = self.apply_alignment_correction(corners)
+
         imgs, masks, corners, sizes = self.crop_final_resolution(
             imgs, masks, corners, sizes
         )
@@ -273,6 +294,242 @@ class Stitcher:
 
     def estimate_scale(self, cameras):
         self.warper.set_scale(cameras)
+        self._alignment_correction = (0.0, 0.0)
+        self._alignment_correction_cached = False
+        self._strip_corrections = None
+
+    def refine_overlap_alignment(self, imgs, masks, corners):
+        """
+        Refine alignment between warped images using feature matching
+        in the overlap region. Corrects vertical/horizontal misalignment
+        caused by imprecise calibration parameters.
+
+        Computes the correction at low resolution and stores it for
+        scaling to final resolution. If a correction has been cached in
+        the calibration file, it is applied directly without recomputing
+        unless force_realign=True was set.
+        """
+        if self._alignment_correction_cached and not self._force_realign:
+            new_corners = list(corners)
+            idx, idy = self._alignment_correction
+            if len(new_corners) >= 2:
+                new_corners[1] = (corners[1][0] + idx, corners[1][1] + idy)
+            return new_corners
+
+        self._alignment_correction = (0.0, 0.0)
+
+        if len(imgs) != 2:
+            return corners
+
+        left_img, right_img = imgs[0], imgs[1]
+        left_corner, right_corner = corners[0], corners[1]
+
+        # Find overlap region in panorama coordinates
+        left_x_end = left_corner[0] + left_img.shape[1]
+        right_x_end = right_corner[0] + right_img.shape[1]
+        overlap_x_start = max(left_corner[0], right_corner[0])
+        overlap_x_end = min(left_x_end, right_x_end)
+
+        if overlap_x_end <= overlap_x_start + 5:
+            return corners
+
+        # Common Y range
+        left_y_end = left_corner[1] + left_img.shape[0]
+        right_y_end = right_corner[1] + right_img.shape[0]
+        common_y_start = max(left_corner[1], right_corner[1])
+        common_y_end = min(left_y_end, right_y_end)
+
+        if common_y_end <= common_y_start + 5:
+            return corners
+
+        # Extract overlap regions in local image coordinates
+        l_x1 = overlap_x_start - left_corner[0]
+        l_x2 = overlap_x_end - left_corner[0]
+        l_y1 = common_y_start - left_corner[1]
+        l_y2 = common_y_end - left_corner[1]
+
+        r_x1 = overlap_x_start - right_corner[0]
+        r_x2 = overlap_x_end - right_corner[0]
+        r_y1 = common_y_start - right_corner[1]
+        r_y2 = common_y_end - right_corner[1]
+
+        left_overlap = left_img[l_y1:l_y2, l_x1:l_x2]
+        right_overlap = right_img[r_y1:r_y2, r_x1:r_x2]
+
+        # Ensure same size
+        h = min(left_overlap.shape[0], right_overlap.shape[0])
+        w = min(left_overlap.shape[1], right_overlap.shape[1])
+        left_overlap = left_overlap[:h, :w]
+        right_overlap = right_overlap[:h, :w]
+
+        if h < 10 or w < 10:
+            return corners
+
+        # Try feature-based alignment first, fall back to phase correlation
+        dx, dy = self._feature_based_alignment(left_overlap, right_overlap)
+
+        if dx is None or dy is None:
+            dx, dy = self._phase_correlation_alignment(left_overlap, right_overlap)
+
+        if dx is None or dy is None:
+            return corners
+
+        # Store the exact integer deltas applied so apply_alignment_correction
+        # scales from the same values used for low-res crop/seam geometry.
+        idx = round(dx)
+        idy = round(dy)
+        self._alignment_correction = (idx, idy)
+        self._save_alignment_correction()
+
+        # Apply correction to right image corner
+        new_corners = list(corners)
+        new_corners[1] = (corners[1][0] + idx, corners[1][1] + idy)
+        return new_corners
+
+    def _save_alignment_correction(self):
+        """
+        Persist the computed alignment correction back to the calibration
+        file so subsequent runs can skip the SIFT computation.
+        """
+        if self._calibration_fp is None:
+            return
+        try:
+            with open(self._calibration_fp, 'r') as f:
+                data = json.load(f)
+            data['alignment_correction'] = list(self._alignment_correction)
+            with open(self._calibration_fp, 'w') as f:
+                json.dump(data, f, default=convert)
+            self._alignment_correction_cached = True
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _feature_based_alignment(self, left_overlap, right_overlap):
+        """
+        Use SIFT feature matching to find the precise offset between
+        two overlap regions. Returns (dx, dy) or (None, None) on failure.
+        """
+        # Convert to grayscale
+        if len(left_overlap.shape) == 3:
+            left_gray = cv.cvtColor(left_overlap, cv.COLOR_BGR2GRAY)
+            right_gray = cv.cvtColor(right_overlap, cv.COLOR_BGR2GRAY)
+        else:
+            left_gray = left_overlap
+            right_gray = right_overlap
+
+        # Detect features - try SIFT first, fall back to ORB.
+        # Use BFMatcher (not FLANN) for deterministic results across processes.
+        try:
+            detector = cv.SIFT_create(nfeatures=1000)
+            norm = cv.NORM_L2
+        except cv.error:
+            detector = cv.ORB_create(nfeatures=1000)
+            norm = cv.NORM_HAMMING
+
+        kp1, des1 = detector.detectAndCompute(left_gray, None)
+        kp2, des2 = detector.detectAndCompute(right_gray, None)
+
+        if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
+            return None, None
+
+        matcher = cv.BFMatcher(norm, crossCheck=False)
+        matches = matcher.knnMatch(des1, des2, k=2)
+
+        # Lowe's ratio test
+        good_matches = []
+        for m_n in matches:
+            if len(m_n) == 2:
+                m, n = m_n
+                if m.distance < 0.7 * n.distance:
+                    good_matches.append(m)
+
+        if len(good_matches) < 4:
+            return None, None
+
+        # Compute translation from matched points
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches])
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches])
+
+        # Use RANSAC to find inlier translation
+        offsets = dst_pts - src_pts
+        # Find translation using RANSAC on the offsets
+        best_dx, best_dy, best_inliers = 0, 0, 0
+        threshold = 2.0  # pixels
+
+        for i in range(min(len(offsets), 200)):
+            candidate_dx = offsets[i, 0]
+            candidate_dy = offsets[i, 1]
+            errors = np.sqrt(
+                (offsets[:, 0] - candidate_dx) ** 2
+                + (offsets[:, 1] - candidate_dy) ** 2
+            )
+            inliers = np.sum(errors < threshold)
+            if inliers > best_inliers:
+                best_inliers = inliers
+                best_dx = candidate_dx
+                best_dy = candidate_dy
+
+        if best_inliers < 4:
+            return None, None
+
+        # Refine using median of inliers
+        errors = np.sqrt(
+            (offsets[:, 0] - best_dx) ** 2 + (offsets[:, 1] - best_dy) ** 2
+        )
+        inlier_mask = errors < threshold
+        dx = -np.median(offsets[inlier_mask, 0])
+        dy = -np.median(offsets[inlier_mask, 1])
+
+        return dx, dy
+
+    def _phase_correlation_alignment(self, left_overlap, right_overlap):
+        """
+        Use phase correlation to find the translation offset between
+        two overlap regions. Returns (dx, dy) or (None, None) on failure.
+        """
+        if len(left_overlap.shape) == 3:
+            left_gray = cv.cvtColor(left_overlap, cv.COLOR_BGR2GRAY)
+            right_gray = cv.cvtColor(right_overlap, cv.COLOR_BGR2GRAY)
+        else:
+            left_gray = left_overlap
+            right_gray = right_overlap
+
+        left_float = left_gray.astype(np.float64)
+        right_float = right_gray.astype(np.float64)
+
+        h, w = left_float.shape[:2]
+        hann = cv.createHanningWindow((w, h), cv.CV_64F)
+
+        (dx, dy), response = cv.phaseCorrelate(
+            left_float * hann, right_float * hann
+        )
+
+        if response > 0.05:
+            return dx, dy
+
+        return None, None
+
+    def apply_alignment_correction(self, corners):
+        """
+        Apply the stored alignment correction scaled from low to final resolution.
+        """
+        dx_low, dy_low = self._alignment_correction
+        if abs(dx_low) < 0.01 and abs(dy_low) < 0.01:
+            return corners
+
+        scale = self.images.get_ratio(
+            Images.Resolution.LOW, Images.Resolution.FINAL
+        )
+
+        dx_final = dx_low * scale
+        dy_final = dy_low * scale
+
+        new_corners = list(corners)
+        if len(new_corners) >= 2:
+            new_corners[1] = (
+                corners[1][0] + round(dx_final),
+                corners[1][1] + round(dy_final),
+            )
+        return new_corners
 
     def resize_low_resolution(self, imgs=None):
         return list(self.images.resize(Images.Resolution.LOW, imgs))
