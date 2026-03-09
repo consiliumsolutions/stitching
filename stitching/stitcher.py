@@ -58,6 +58,7 @@ class Stitcher:
         "blend_strength": Blender.DEFAULT_BLEND_STRENGTH,
         "timelapse": Timelapser.DEFAULT_TIMELAPSE,
         "timelapse_prefix": Timelapser.DEFAULT_TIMELAPSE_PREFIX,
+        "force_realign": False,
     }
 
     def __init__(self, **kwargs):
@@ -69,9 +70,12 @@ class Stitcher:
         self.kwargs = kwargs
         self.settings.update(kwargs)
         self._alignment_correction = (0.0, 0.0)
+        self._alignment_correction_cached = False
+        self._calibration_fp = None
         self._strip_corrections = None
 
         args = SimpleNamespace(**self.settings)
+        self._force_realign = args.force_realign
         self.medium_megapix = args.medium_megapix
         self.low_megapix = args.low_megapix
         self.final_megapix = args.final_megapix
@@ -143,6 +147,12 @@ class Stitcher:
                 self.cameras_registered = True
                 self.run_calibration = False
                 self.estimate_scale(self.cameras)
+                self._calibration_fp = fp
+
+                ac = data.get('alignment_correction')
+                if ac is not None:
+                    self._alignment_correction = (int(ac[0]), int(ac[1]))
+                    self._alignment_correction_cached = True
 
             else:
                 self.cameras = None
@@ -285,6 +295,7 @@ class Stitcher:
     def estimate_scale(self, cameras):
         self.warper.set_scale(cameras)
         self._alignment_correction = (0.0, 0.0)
+        self._alignment_correction_cached = False
         self._strip_corrections = None
 
     def refine_overlap_alignment(self, imgs, masks, corners):
@@ -294,8 +305,17 @@ class Stitcher:
         caused by imprecise calibration parameters.
 
         Computes the correction at low resolution and stores it for
-        scaling to final resolution.
+        scaling to final resolution. If a correction has been cached in
+        the calibration file, it is applied directly without recomputing
+        unless force_realign=True was set.
         """
+        if self._alignment_correction_cached and not self._force_realign:
+            new_corners = list(corners)
+            idx, idy = self._alignment_correction
+            if len(new_corners) >= 2:
+                new_corners[1] = (corners[1][0] + idx, corners[1][1] + idy)
+            return new_corners
+
         self._alignment_correction = (0.0, 0.0)
 
         if len(imgs) != 2:
@@ -359,11 +379,29 @@ class Stitcher:
         idx = round(dx)
         idy = round(dy)
         self._alignment_correction = (idx, idy)
+        self._save_alignment_correction()
 
         # Apply correction to right image corner
         new_corners = list(corners)
         new_corners[1] = (corners[1][0] + idx, corners[1][1] + idy)
         return new_corners
+
+    def _save_alignment_correction(self):
+        """
+        Persist the computed alignment correction back to the calibration
+        file so subsequent runs can skip the SIFT computation.
+        """
+        if self._calibration_fp is None:
+            return
+        try:
+            with open(self._calibration_fp, 'r') as f:
+                data = json.load(f)
+            data['alignment_correction'] = list(self._alignment_correction)
+            with open(self._calibration_fp, 'w') as f:
+                json.dump(data, f, default=convert)
+            self._alignment_correction_cached = True
+        except (OSError, json.JSONDecodeError):
+            pass
 
     def _feature_based_alignment(self, left_overlap, right_overlap):
         """
@@ -378,13 +416,14 @@ class Stitcher:
             left_gray = left_overlap
             right_gray = right_overlap
 
-        # Detect features - try SIFT first, fall back to ORB
+        # Detect features - try SIFT first, fall back to ORB.
+        # Use BFMatcher (not FLANN) for deterministic results across processes.
         try:
             detector = cv.SIFT_create(nfeatures=1000)
-            use_flann = True
+            norm = cv.NORM_L2
         except cv.error:
             detector = cv.ORB_create(nfeatures=1000)
-            use_flann = False
+            norm = cv.NORM_HAMMING
 
         kp1, des1 = detector.detectAndCompute(left_gray, None)
         kp2, des2 = detector.detectAndCompute(right_gray, None)
@@ -392,13 +431,7 @@ class Stitcher:
         if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
             return None, None
 
-        # Match features
-        if use_flann:
-            index_params = dict(algorithm=1, trees=5)  # FLANN_INDEX_KDTREE
-            search_params = dict(checks=50)
-            matcher = cv.FlannBasedMatcher(index_params, search_params)
-        else:
-            matcher = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=False)
+        matcher = cv.BFMatcher(norm, crossCheck=False)
         matches = matcher.knnMatch(des1, des2, k=2)
 
         # Lowe's ratio test
