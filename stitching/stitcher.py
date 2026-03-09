@@ -331,7 +331,7 @@ class Stitcher:
         combined_mask = cv.bitwise_and(mcrop1, mcrop2)
         valid_pixels = np.count_nonzero(combined_mask)
         total_pixels = overlap_w * overlap_h
-        if total_pixels == 0 or valid_pixels / total_pixels < 0.3:
+        if valid_pixels / total_pixels < 0.3:
             return corners
 
         if len(crop1.shape) == 3:

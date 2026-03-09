@@ -342,10 +342,12 @@ class TestStitcher(unittest.TestCase):
         h, w = img.shape[:2]
 
         # Create two overlapping regions from the same image
-        # with a known vertical offset
+        # with a known vertical offset of 5 pixels and
+        # a horizontal placement offset of 100 pixels
         overlap_w = w // 2
         crop1 = img[:, :overlap_w + 100]
-        crop2 = img[5:, 100:]  # shifted down by 5 pixels
+        # Shift right image down by 5 pixels, offset right by 100 pixels
+        crop2 = img[5:, 100:]
 
         h1, w1 = crop1.shape[:2]
         h2, w2 = crop2.shape[:2]
@@ -364,8 +366,9 @@ class TestStitcher(unittest.TestCase):
         # The refinement should detect a shift
         dx, dy = stitcher._alignment_shift
         # The vertical shift of 5 pixels should be detected
-        # (exact value may differ due to image content)
         self.assertNotEqual((dx, dy), (0.0, 0.0))
+        # Verify the vertical shift is approximately 5 pixels
+        self.assertAlmostEqual(abs(dy), 5.0, delta=3.0)
 
 
 def start_test():
