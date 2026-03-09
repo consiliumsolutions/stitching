@@ -11,8 +11,8 @@ from .context import (
     StitchingError,
     StitchingWarning,
     load_test_img,
-    test_input,
-    test_output,
+    get_test_input,
+    get_test_output,
     write_test_result,
 )
 
@@ -24,7 +24,7 @@ class TestStitcher(unittest.TestCase):
         expected_shape = (673, 2636)
 
         # from image filenames
-        imgs = [test_input("weir*.jpg")]
+        imgs = [get_test_input("weir*.jpg")]
         name = "weir_from_filenames"
 
         self.stitch_test_with_warning(
@@ -58,7 +58,7 @@ class TestStitcher(unittest.TestCase):
 
     def test_stitcher_with_not_matching_images(self):
         stitcher = Stitcher()
-        imgs = [test_input("s1.jpg"), test_input("boat1.jpg")]
+        imgs = [get_test_input("s1.jpg"), get_test_input("boat1.jpg")]
 
         self.stitch_test_with_error(
             stitcher,
@@ -73,7 +73,7 @@ class TestStitcher(unittest.TestCase):
 
     def test_stitcher_aquaduct(self):
         stitcher = Stitcher(nfeatures=250, crop=False)
-        imgs = [test_input("s?.jpg")]
+        imgs = [get_test_input("s?.jpg")]
         max_derivation = 3
         expected_shape = (700, 1811)
         name = "s_result"
@@ -90,12 +90,12 @@ class TestStitcher(unittest.TestCase):
         }
         stitcher = Stitcher(**settings)
         imgs = [
-            test_input("boat5.jpg"),
-            test_input("boat2.jpg"),
-            test_input("boat3.jpg"),
-            test_input("boat4.jpg"),
-            test_input("boat1.jpg"),
-            test_input("boat6.jpg"),
+            get_test_input("boat5.jpg"),
+            get_test_input("boat2.jpg"),
+            get_test_input("boat3.jpg"),
+            get_test_input("boat4.jpg"),
+            get_test_input("boat1.jpg"),
+            get_test_input("boat6.jpg"),
         ]
         max_derivation = 600
         expected_shape = (14488, 7556)
@@ -114,12 +114,12 @@ class TestStitcher(unittest.TestCase):
         }
         stitcher = Stitcher(**settings)
         imgs = [
-            test_input("boat5.jpg"),
-            test_input("boat2.jpg"),
-            test_input("boat3.jpg"),
-            test_input("boat4.jpg"),
-            test_input("boat1.jpg"),
-            test_input("boat6.jpg"),
+            get_test_input("boat5.jpg"),
+            get_test_input("boat2.jpg"),
+            get_test_input("boat3.jpg"),
+            get_test_input("boat4.jpg"),
+            get_test_input("boat1.jpg"),
+            get_test_input("boat6.jpg"),
         ]
         max_derivation = 600
         expected_shape = (7400, 12340)
@@ -130,18 +130,18 @@ class TestStitcher(unittest.TestCase):
         )
 
     def test_stitcher_boat_aquaduct_subset(self):
-        graph = test_output("boat_subset_matches_graph.txt")
+        graph = get_test_output("boat_subset_matches_graph.txt")
         settings = {"final_megapix": 1, "matches_graph_dot_file": graph}
         stitcher = Stitcher(**settings)
         imgs = [
-            test_input("boat5.jpg"),
-            test_input("s1.jpg"),
-            test_input("s2.jpg"),
-            test_input("boat2.jpg"),
-            test_input("boat3.jpg"),
-            test_input("boat4.jpg"),
-            test_input("boat1.jpg"),
-            test_input("boat6.jpg"),
+            get_test_input("boat5.jpg"),
+            get_test_input("s1.jpg"),
+            get_test_input("s2.jpg"),
+            get_test_input("boat2.jpg"),
+            get_test_input("boat3.jpg"),
+            get_test_input("boat4.jpg"),
+            get_test_input("boat1.jpg"),
+            get_test_input("boat6.jpg"),
         ]
         max_derivation = 100
         expected_shape = (705, 3374)
@@ -177,7 +177,7 @@ class TestStitcher(unittest.TestCase):
         }
 
         stitcher = AffineStitcher(**settings)
-        imgs = [test_input("budapest?.jpg")]
+        imgs = [get_test_input("budapest?.jpg")]
         max_derivation = 50
         expected_shape = (1155, 2310)
         name = "budapest"
@@ -188,7 +188,7 @@ class TestStitcher(unittest.TestCase):
         stitcher = Stitcher(crop=False)
 
         # without masks
-        imgs = [test_input("barcode1.png"), test_input("barcode2.png")]
+        imgs = [get_test_input("barcode1.png"), get_test_input("barcode2.png")]
         max_derivation = 25
         expected_shape = (905, 2124)
         name = "features_without_mask"
@@ -196,7 +196,7 @@ class TestStitcher(unittest.TestCase):
         self.stitch_test(stitcher, imgs, expected_shape, max_derivation, name)
 
         # with masks
-        masks = [test_input("mask1.png"), test_input("mask2.png")]
+        masks = [get_test_input("mask1.png"), get_test_input("mask2.png")]
         max_derivation = 15
         expected_shape = (716, 1852)
         name = "features_with_mask"
@@ -284,10 +284,47 @@ class TestStitcher(unittest.TestCase):
         # the scale should not be fixed by the first run but set dynamically
         # based on every input image set.
         stitcher = Stitcher()
-        _ = stitcher.stitch([test_input("s1.jpg"), test_input("s2.jpg")])
+        _ = stitcher.stitch([get_test_input("s1.jpg"), get_test_input("s2.jpg")])
         self.assertEqual(round(stitcher.images._scalers["MEDIUM"].scale, 2), 0.83)
-        _ = stitcher.stitch([test_input("boat1.jpg"), test_input("boat2.jpg")])
+        _ = stitcher.stitch([get_test_input("boat1.jpg"), get_test_input("boat2.jpg")])
         self.assertEqual(round(stitcher.images._scalers["MEDIUM"].scale, 2), 0.24)
+
+
+class TestCalibrationAndAlignment(unittest.TestCase):
+    def test_calibration_scaling(self):
+        stitcher = Stitcher(calibrate=False)
+        base_camera = {
+            "aspect": 1.0,
+            "focal": 10.0,
+            "ppx": 5.0,
+            "ppy": 4.0,
+            "t": [[0.0], [0.0], [0.0]],
+            "R": np.eye(3, dtype=np.float32),
+        }
+        stitcher._calibration_camera_data = [base_camera, base_camera]
+        stitcher._calibration_image_size = (10, 8)
+
+        scaled_cameras = stitcher._create_cameras_from_calibration((20, 16))
+
+        self.assertAlmostEqual(scaled_cameras[0].focal, 20.0)
+        self.assertAlmostEqual(scaled_cameras[0].ppx, 10.0)
+        self.assertAlmostEqual(scaled_cameras[0].ppy, 8.0)
+
+    def test_alignment_refinement_detects_shift(self):
+        base = (np.arange(2500, dtype=np.uint8) % 251).reshape(50, 50)
+        shifted = np.zeros_like(base)
+        shifted[:, 2:] = base[:, :-2]
+
+        imgs = [base, shifted]
+        masks = [np.ones_like(base, dtype=np.uint8) * 255] * 2
+        corners = [(0, 0), (0, 0)]
+        sizes = [(50, 50), (50, 50)]
+
+        stitcher = Stitcher(calibrate=False)
+        shift_x, shift_y = stitcher._compute_alignment_shift(imgs, masks, corners, sizes)
+
+        self.assertLess(shift_x, -1.0)
+        self.assertLess(abs(shift_y), 0.5)
 
 
 def start_test():

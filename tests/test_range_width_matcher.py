@@ -6,9 +6,9 @@ from .context import (
     FeatureDetector,
     FeatureMatcher,
     Stitcher,
+    get_test_input,
+    get_test_output,
     load_test_img,
-    test_input,
-    test_output,
 )
 
 
@@ -38,14 +38,14 @@ class TestRangeMatcher(unittest.TestCase):
         settings = {
             "range_width": 1,
             "confidence_threshold": 0,
-            "matches_graph_dot_file": test_output("range_width_matches_graph.txt"),
+            "matches_graph_dot_file": get_test_output("range_width_matches_graph.txt"),
         }
         stitcher = Stitcher(**settings)
         stitcher.stitch(
             [
-                test_input("weir_1.jpg"),
-                test_input("weir_2.jpg"),
-                test_input("weir_3.jpg"),
+                get_test_input("weir_1.jpg"),
+                get_test_input("weir_2.jpg"),
+                get_test_input("weir_3.jpg"),
             ]
         )
 

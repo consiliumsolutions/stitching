@@ -38,16 +38,16 @@ VERBOSE_DIR = os.path.join(OUT_DIR, "verbose")
 
 
 def load_test_img(img_name, *args, **kwargs):
-    return cv.imread(test_input(img_name), *args, **kwargs)
+    return cv.imread(get_test_input(img_name), *args, **kwargs)
 
 
-def test_input(file):
+def get_test_input(file):
     return os.path.join(IN_DIR, file)
 
 
 def write_test_result(img_name, img):
-    cv.imwrite(test_output(img_name), img)
+    cv.imwrite(get_test_output(img_name), img)
 
 
-def test_output(file):
+def get_test_output(file):
     return os.path.join(OUT_DIR, file)
