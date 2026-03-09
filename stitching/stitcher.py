@@ -69,6 +69,7 @@ class Stitcher:
         self.kwargs = kwargs
         self.settings.update(kwargs)
         self._alignment_correction = (0.0, 0.0)
+        self._strip_corrections = None
 
         args = SimpleNamespace(**self.settings)
         self.medium_megapix = args.medium_megapix
@@ -284,6 +285,7 @@ class Stitcher:
     def estimate_scale(self, cameras):
         self.warper.set_scale(cameras)
         self._alignment_correction = (0.0, 0.0)
+        self._strip_corrections = None
 
     def refine_overlap_alignment(self, imgs, masks, corners):
         """
@@ -352,11 +354,15 @@ class Stitcher:
         if dx is None or dy is None:
             return corners
 
-        self._alignment_correction = (dx, dy)
+        # Store the exact integer deltas applied so apply_alignment_correction
+        # scales from the same values used for low-res crop/seam geometry.
+        idx = round(dx)
+        idy = round(dy)
+        self._alignment_correction = (idx, idy)
 
         # Apply correction to right image corner
         new_corners = list(corners)
-        new_corners[1] = (corners[1][0] + round(dx), corners[1][1] + round(dy))
+        new_corners[1] = (corners[1][0] + idx, corners[1][1] + idy)
         return new_corners
 
     def _feature_based_alignment(self, left_overlap, right_overlap):

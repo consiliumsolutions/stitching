@@ -52,6 +52,13 @@ def main():
     result = stitcher.stitch([left, right])
 
     print(f"Alignment correction (low res): {stitcher._alignment_correction}")
+    if stitcher._strip_corrections is not None:
+        y_centers, dy = stitcher._strip_corrections
+        print("Strip corrections (low res):")
+        for yc, d in zip(y_centers, dy):
+            print(f"  y={yc:.0f}  dy={d:.3f}")
+    else:
+        print("Strip corrections: none computed")
     print(f"Result: {result.shape[1]}x{result.shape[0]}")
 
     cv.imwrite(output_path, result)
